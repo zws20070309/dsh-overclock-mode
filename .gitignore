@@ -26,3 +26,6 @@ Thumbs.db
 
 # 本插件在 $DSH_HOME 下的状态文件（按会话开关，属于本机运行时状态，不入库）
 overclock-mode.json
+
+# tools/preview-button.mjs 的默认产物：一次性的本地预览页，不入库
+preview-button.html
