@@ -167,10 +167,10 @@ assert.equal(offTree.props['data-state'], 'off')
 const kinds = offTree.children.map((child) => child.props.className)
 assert.deepEqual(plain(kinds), ['dsh-oc-text', 'dsh-oc-track'])
 
-// 轨道是「天空 / 星星 / 云 / 阳光 / 日月」五层，顺序即 z 序（天空最底、圆盘最后画）。
+// 轨道是「天空 / 星星 / 云 / 阳光 / 忙碌回声 / 日月」六层，顺序即 z 序（天空最底、圆盘最后画）。
 const track = offTree.children[1]
 const layers = track.children.map((child) => child.props.className)
-assert.deepEqual(plain(layers), ['dsh-oc-sky', 'dsh-oc-stars', 'dsh-oc-clouds', 'dsh-oc-glow', 'dsh-oc-knob'])
+assert.deepEqual(plain(layers), ['dsh-oc-sky', 'dsh-oc-stars', 'dsh-oc-clouds', 'dsh-oc-glow', 'dsh-oc-pulse', 'dsh-oc-knob'])
 
 // 真实 React 会把数组子节点展开，替身不会 —— 这里统一拍平后再数。
 const flat = (node) => (node.children ?? []).flat(Infinity).filter((c) => c !== null && c !== undefined)
@@ -194,7 +194,7 @@ assert.ok(cloudClasses.every((c) => c === 'dsh-oc-cloud'), '云类名统一')
 const cloudKeys = flat(cloudLayer).map((c) => c.props.key)
 assert.equal(new Set(cloudKeys).size, cloudKeys.length, 'clouds carry unique keys')
 
-const knob = track.children[4]
+const knob = track.children[5]
 const craterClasses = flat(knob).map((c) => c.props.className)
 assert.equal(craterClasses.length, 3, '三个环形山')
 assert.ok(craterClasses.every((c) => c === 'dsh-oc-crater'), '环形山类名统一')
@@ -288,7 +288,7 @@ assert.ok(source.includes('data-plugin-css'), 'stylesheet is tagged for idempote
 // ── 昼夜动效：开态必须是"动"的，不能只是换个颜色 ──────────────────────────────
 assert.ok(css.includes('@keyframes dsh-oc-twinkle'), 'stars twinkle at night')
 assert.ok(css.includes('@keyframes dsh-oc-sheen'), 'sun has a rotating highlight')
-assert.ok(css.includes('@keyframes dsh-oc-breathe'), 'busy state breathes')
+assert.ok(css.includes('@keyframes dsh-oc-pulse'), 'busy state shows a pulse')
 assert.ok(css.includes('@keyframes dsh-oc-drift'), 'clouds drift slowly')
 // 天空交叉淡入：两个渐变之间无法插值，必须两层叠透明度。
 assert.ok(css.includes('.dsh-oc-sky::after'), 'day sky is a cross-fading overlay')
@@ -317,9 +317,50 @@ assert.ok(css.includes('prefers-reduced-motion'), 'respects reduced motion')
 const reduced = ruleBody('@media (prefers-reduced-motion:reduce)')
 assert.ok(reduced.includes('animation:none'), 'reduced motion also stops animations')
 for (const layer of ['.dsh-oc-sky::after', '.dsh-oc-stars', '.dsh-oc-clouds', '.dsh-oc-cloud',
-  '.dsh-oc-glow', '.dsh-oc-knob', '.dsh-oc-crater']) {
+  '.dsh-oc-glow', '.dsh-oc-pulse', '.dsh-oc-knob', '.dsh-oc-crater']) {
   assert.ok(reduced.includes(layer), '减少动效要覆盖 ' + layer)
 }
+
+// ── 回归：动画不许抢走圆盘的 transform ───────────────────────────────────────
+// 这是最贵的一个坑，代价是"整个过渡完全消失"：
+// 真实点击时 React 在同一次提交里同时置 data-busy="1" 与 data-state="on"，
+// 于是 animation 和 transition 同时命中 .dsh-oc-knob 的 transform；
+// CSS 级联里**动画压过过渡**，动画第一帧直接把 translateX 写成终点值，
+// 过渡根本没机会开始 —— 用户看到的就是"太阳瞬间跳到右边，一点过渡都没有"。
+// 实测（把过渡对象定格到 t=0/50%/100%）：
+//   修前 真实点击 t=0 位移就已经是 19.00px；修后是 0.00 → 13.64 → 19.00。
+// 所以这条断言必须存在：任何 data-busy / data-state 规则都不许给圆盘加 animation。
+const knobAnimationRules = rules.filter((rule) => {
+  const sels = rule.sel.split(',').map((s) => s.trim())
+  return sels.some((s) => s.endsWith('.dsh-oc-knob') || s.endsWith('.dsh-oc-knob::after'))
+    && /(^|;)animation\s*:/.test(rule.body.replace(/^\s+/, ''))
+})
+for (const rule of knobAnimationRules) {
+  // 唯一允许的是"开态的高光自转"，它动的是 ::after（伪元素），且不碰 translateX。
+  assert.ok(rule.sel.includes('::after'),
+    '圆盘本体不许挂 animation（会压掉位移过渡）：' + rule.sel)
+  assert.ok(!/translateX/.test(rule.body),
+    '圆盘上的动画不许碰 translateX（会压掉位移过渡）：' + rule.sel)
+}
+// 忙碌态的回声必须是独立一层，且它自己只做 transition。
+assert.ok(ruleBody('.dsh-oc-pulse').includes('transition:transform var(--dsh-oc-move)'),
+  '忙碌回声跟着圆盘走，但只靠 transition')
+assert.ok(!ruleBody('.dsh-oc-pulse').includes('animation:'),
+  '忙碌回声本体不许有 animation，动画放在它的 ::after 上')
+// 忙碌态任何一条规则都不许给 .dsh-oc-pulse 本体加 animation：
+// 它的 transform 是位移过渡的唯一载体，一旦被动画接管，回声和圆盘就会错位。
+// 注意用 endsWith 而不是"选择器里含有"：真实的规则是
+// `#dsh-overclock-toggle[data-busy="1"] .dsh-oc-pulse`，用精确相等会漏掉（试过，漏了）。
+// （@media (prefers-reduced-motion) 里的 animation:none 是"关掉动画"，要放行。）
+for (const rule of rules) {
+  if (rule.depth > 0) continue
+  const targetsPulse = rule.sel.split(',').map((s) => s.trim()).some((s) => s.endsWith('.dsh-oc-pulse'))
+  if (!targetsPulse) continue
+  assert.ok(!/(^|;)animation\s*:/.test(rule.body.replace(/^\s+/, '')),
+    '忙碌回声本体不许挂 animation（会和位移过渡抢 transform）：' + rule.sel)
+}
+assert.ok(ruleBody('#dsh-overclock-toggle[data-busy="1"] .dsh-oc-pulse::after').includes('animation:'),
+  '扩散动画挂在 ::after 上，不和位移抢 transform')
 
 // ── 行程时长：用户明确提过"太快了，跟没有一样"，所以这条要能被测出来 ─────────────
 // 上一版是 .6s + cubic-bezier(.56,1.35,.52,1)。实测（把每条过渡的 currentTime 手动擦洗）
