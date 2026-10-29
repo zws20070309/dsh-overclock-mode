@@ -284,15 +284,31 @@ box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--dsh-oc-accent,#f5a524) 45%,tr
 #dsh-overclock-toggle[data-state="error"]{color:var(--dsw-alias-state-error-primary,#e5484d) !important}
 #dsh-overclock-toggle[data-state="error"] .dsh-oc-track{
 box-shadow:inset 0 0 0 1px currentColor !important}
-/* 忙碌态：圆盘轻轻收放，表示请求在飞 */
-#dsh-overclock-toggle[data-busy="1"] .dsh-oc-knob{animation:dsh-oc-breathe 1.1s ease-in-out infinite}
-@keyframes dsh-oc-breathe{0%,100%{transform:translateX(var(--dsh-oc-x)) scale(1)}
-50%{transform:translateX(var(--dsh-oc-x)) scale(.86)}}
+/* 忙碌态：请求在飞时给圆盘套一圈向外扩散的"回声"。
+   ⚠️ 这里**绝对不能**去动画圆盘本身的 transform —— 踩过，代价是"整个过渡消失"：
+   真实点击时 React 会在同一次提交里同时置 data-busy 和 data-state，于是
+   animation 和 transition 同时命中 .dsh-oc-knob 的 transform。
+   CSS 级联里**动画压过过渡**（animation 属于 Cascade Origin 里更高的一档），
+   动画的第一帧立刻把 translateX 写成终点值，过渡根本没有机会开始 ——
+   表现就是"点一下太阳瞬移到右边，一点过渡都没有"。
+   所以：会动的层单独一个元素（.dsh-oc-pulse 负责跟着圆盘走，它只做 transition），
+   扩散动画放在它的 ::after 上（只做 transform/opacity，没人跟它抢）。
+   （注意 CSS 模板字符串里不能出现反引号，注释也一样 —— 会提前把模板关掉。） */
+.dsh-oc-pulse{position:absolute;left:${INSET}px;top:${INSET}px;width:${KNOB}px;height:${KNOB}px;
+border-radius:50%;z-index:1;pointer-events:none;opacity:0;
+transform:translateX(var(--dsh-oc-x));
+transition:transform var(--dsh-oc-move) var(--dsh-oc-ease),opacity .3s ease}
+.dsh-oc-pulse::after{content:'';position:absolute;inset:0;border-radius:50%;
+box-shadow:0 0 0 1.5px currentColor;opacity:0}
+#dsh-overclock-toggle[data-busy="1"] .dsh-oc-pulse{opacity:1}
+#dsh-overclock-toggle[data-busy="1"] .dsh-oc-pulse::after{
+animation:dsh-oc-pulse 1.1s ease-out infinite}
+@keyframes dsh-oc-pulse{0%{transform:scale(1);opacity:.85}100%{transform:scale(2);opacity:0}}
 
 /* 尊重"减少动态效果"：全部停掉，状态依然靠位置与配色可读 */
 @media (prefers-reduced-motion:reduce){
 .dsh-oc-track,.dsh-oc-sky::after,.dsh-oc-stars,.dsh-oc-star,.dsh-oc-clouds,.dsh-oc-cloud,
-.dsh-oc-glow,.dsh-oc-knob,.dsh-oc-knob::after,.dsh-oc-crater{
+.dsh-oc-glow,.dsh-oc-pulse,.dsh-oc-pulse::after,.dsh-oc-knob,.dsh-oc-knob::after,.dsh-oc-crater{
 transition:none !important;animation:none !important}}
 `
 
@@ -329,7 +345,7 @@ transition:none !important;animation:none !important}}
       return out
     }
 
-    /** 昼夜场景：天空 / 星星 / 云 / 阳光 / 日月。顺序即 z 序，圆盘最后画。 */
+    /** 昼夜场景：天空 / 星星 / 云 / 阳光 / 忙碌回声 / 日月。顺序即 z 序，圆盘最后画。 */
     function scene() {
       return h(
         'span',
@@ -338,6 +354,7 @@ transition:none !important;animation:none !important}}
         h('span', { className: 'dsh-oc-stars' }, stars()),
         h('span', { className: 'dsh-oc-clouds' }, clouds()),
         h('span', { className: 'dsh-oc-glow' }),
+        h('span', { className: 'dsh-oc-pulse' }),
         h('span', { className: 'dsh-oc-knob' }, craters()),
       )
     }
