@@ -1,0 +1,9 @@
+# 超频模式 —— bundle patch（宿主平面）
+#
+# 只做一件事：把本包作为**一行新插件**插进 profile 的 cordis roster。
+# `- insert:` 是新建行，不覆盖任何已存在的行，所以与官方 bundle 层没有先后依赖。
+#
+# 没有这一行就没有 fiber，`dsh.client` 声明也就永远扫不到 —— 浏览器半不会加载。
+- insert:
+    - id: overclock-mode
+      name: '@zws/dsh-overclock-mode'

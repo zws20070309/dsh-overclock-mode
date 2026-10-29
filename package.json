@@ -1,0 +1,50 @@
+{
+  "name": "@zws/dsh-overclock-mode",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Per-session Overclock mode for DeepSeek Harness: a composer switch that appends an unlimited-budget instruction to that session's system prompt only.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "tools/*.mjs",
+    "docs/*.png",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale"
+      ]
+    }
+  },
+  "icon": "./icon.svg",
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "system-prompt",
+    "session"
+  ],
+  "license": "MIT"
+}

@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Overclock Mode",
+    "description": "Per-session Overclock switch in the composer toolbar: while on, that one session's system prompt gains an unlimited-budget, no-holds-barred instruction. Subagent sessions inherit the nearest parent's setting; every other session stays untouched."
+  }
+}
