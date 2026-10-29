@@ -7,9 +7,10 @@
 //
 // 开关造型：**昼夜切换**。开 = 太阳，关 = 月亮。
 //   * 关态：深蓝夜空 + 星星闪烁 + 银色月盘（带环形山）
-//   * 开态：晴空蓝 + 暖阳（带外发光与缓慢旋转的内高光）+ 星星飞散消失
+//   * 开态：晴空蓝 + 白云 + 暖阳（带外发光与缓慢旋转的内高光）+ 星星飞散消失
 //   * 圆盘用一个 CSS 变量 --dsh-oc-x 同时驱动位移与光晕，二者不可能走岔
-//   * 缓动用 cubic-bezier(.56,1.35,.52,1)：0.35 的过冲带来"弹一下"的手感
+//   * 行程时长与缓动收敛到 --dsh-oc-move / --dsh-oc-ease 两个变量：
+//     只有"看得见的位移占时长的比例"够大，动效才不会被看成"啪地跳过去"。
 //
 // 为什么这个文件长这样（三条都是踩过的坑，不是风格偏好）：
 //   1. 所有 client bundle 会被拼成**一个脚本**执行，顶层 const 撞名会让整个拼合脚本
@@ -53,6 +54,8 @@ window.__ModuleLoader__.load({
     const STAR_COUNT = 5
     /** 月盘上的环形山。 */
     const CRATER_COUNT = 3
+    /** 白昼的云。云全部落在轨道左半边 —— 圆盘滑到右端（太阳升起）后露出来的正是那片天。 */
+    const CLOUD_COUNT = 3
 
     const DICTIONARY = {
       zh: {
@@ -159,6 +162,14 @@ color:var(--dsw-alias-label-primary,inherit)}
 .dsh-oc-track{position:relative;display:inline-block;flex:none;box-sizing:border-box;
 width:${TRACK_W}px;height:${TRACK_H}px;border-radius:999px;overflow:hidden;
 --dsh-oc-x:0px;
+/* 行程时长与缓动：圆盘 / 光晕 / 星星共用一套，改一处就整体变快变慢。
+   上一版是 .6s + cubic-bezier(.56,1.35,.52,1)，实测（getAnimations 擦洗时间线）
+   可见位移只覆盖时长的 45%：600ms 里 240ms 就走完了 86% 的行程，看着像"啪"地跳过去。
+   现在 1.1s + "长中间段"缓动，可见位移覆盖 67% ≈ 730ms，是原来的 2.7 倍。
+   这里不用带回弹的曲线：19px 行程下 4% 的过冲只有 0.8px，肉眼看不见，
+   却要多花掉近一半的时长（52% 处就到终点了）去收尾 —— 正是上一版"看着没动"的成因。 */
+--dsh-oc-move:1.1s;
+--dsh-oc-ease:cubic-bezier(.4,.15,.35,1);
 box-shadow:inset 0 1px 3px rgba(0,0,0,.5),inset 0 -1px 1px rgba(255,255,255,.07);
 transition:box-shadow .5s ease}
 
@@ -168,12 +179,12 @@ transition:box-shadow .5s ease}
 background:linear-gradient(180deg,#0a0f1e 0%,#141d38 58%,#1e2a4c 100%)}
 .dsh-oc-sky::after{content:'';position:absolute;inset:0;border-radius:inherit;
 background:linear-gradient(180deg,#2f8fd8 0%,#63b8ee 55%,#a6dbf8 100%);
-opacity:0;transition:opacity .55s ease}
+opacity:0;transition:opacity 1s ease}
 #dsh-overclock-toggle[data-state="on"] .dsh-oc-sky::after{opacity:1}
 
 /* 星星：只在夜里出现，开态时向上飞散并缩小 */
 .dsh-oc-stars{position:absolute;inset:0;border-radius:inherit;opacity:1;
-transition:opacity .45s ease,transform .6s cubic-bezier(.56,1.35,.52,1)}
+transition:opacity .8s ease,transform var(--dsh-oc-move) var(--dsh-oc-ease)}
 .dsh-oc-star{position:absolute;width:2px;height:2px;border-radius:50%;background:#fff;
 box-shadow:0 0 2.5px rgba(255,255,255,.9);
 animation:dsh-oc-twinkle 2.6s ease-in-out infinite}
@@ -186,12 +197,48 @@ animation:dsh-oc-twinkle 2.6s ease-in-out infinite}
 transform:translateY(-6px) scale(.4)}
 @keyframes dsh-oc-twinkle{0%,100%{opacity:.28;transform:scale(.7)}50%{opacity:1;transform:scale(1.15)}}
 
+/* ── 白云：只属于白昼 ───────────────────────────────────────────────────
+   1. 位置全部落在轨道左半边。轨道只有 42px 宽，两个状态各占一半：
+      月亮在左（x 3~20）时右半边才是天，太阳在右（x 22~39）时左半边才是天。
+      所以"太阳左边的云"= 左半边的云，也只有这里放得下 —— 放到右半边会被太阳整块盖住。
+   2. 云在夜里必须整体 opacity:0，不能指望月亮去挡：月亮只盖到 y 3~20，
+      云的凸起会从月亮上边缘和右边冒出来，夜里飘着几朵白云就假了。
+   3. 形状 = 一条扁圆底 + 两个圆凸起（::before/::after 用 background:inherit 继承底色）。
+      百分比尺寸让三朵不同大小的云共用同一套比例。 */
+.dsh-oc-clouds{position:absolute;inset:0;border-radius:inherit}
+.dsh-oc-cloud{position:absolute;border-radius:3px;background:#fff;opacity:0;
+transition:opacity .9s ease;
+animation:dsh-oc-drift 14s ease-in-out infinite}
+.dsh-oc-cloud::before,.dsh-oc-cloud::after{content:'';position:absolute;border-radius:50%;
+background:inherit}
+.dsh-oc-cloud::before{left:12%;bottom:48%;width:60%;height:145%}
+.dsh-oc-cloud::after{left:52%;bottom:48%;width:38%;height:115%}
+/* 三朵云各自错开，互不相邻：C1 左上、C2 右中、C3 左下。
+   坐标不是拍脑袋定的：轨道是 42x23 的胶囊，左侧是个半径 11.5 的圆角，
+   把云的整个剪影（圆角底座 ∪ 两个椭圆凸起）按 0.05px 网格扫一遍，
+   离边界的最小余量是 1.75px（test/client.test.mjs 会重算这条）。
+   最早那版 C1 放在 left:3,top:5，凸起顶端离边界只有 0.24px，
+   渲染出来被 overflow:hidden 切掉一块，放大 16 倍才看得出来。 */
+.dsh-oc-cloud:nth-child(1){left:4px;top:6.5px;width:9px;height:4px;animation-duration:14s}
+.dsh-oc-cloud:nth-child(2){left:14px;top:9.5px;width:7px;height:3px;animation-duration:18s;animation-delay:-4s}
+.dsh-oc-cloud:nth-child(3){left:4px;top:15px;width:9px;height:3px;animation-duration:11s;animation-delay:-7s}
+#dsh-overclock-toggle[data-state="on"] .dsh-oc-cloud{opacity:.94}
+/* 由远及近：三朵错开淡入，云是"飘进来"的，不是一起"啪"地出现。
+   transition-delay 写在开态规则里 → 只在淡入方向错开，淡出时一起走。
+   延后到 .2s 起：天空交叉淡入还没把底色提亮时，半透明的白云压在深蓝上会是一团灰，
+   等天亮了再让云浮出来才干净。 */
+#dsh-overclock-toggle[data-state="on"] .dsh-oc-cloud:nth-child(1){transition-delay:.2s}
+#dsh-overclock-toggle[data-state="on"] .dsh-oc-cloud:nth-child(2){transition-delay:.32s}
+#dsh-overclock-toggle[data-state="on"] .dsh-oc-cloud:nth-child(3){transition-delay:.44s}
+/* 极小的横向飘移（3px）。不能再大：云再往右就滑到太阳底下去了。 */
+@keyframes dsh-oc-drift{0%,100%{transform:translateX(0)}50%{transform:translateX(3px)}}
+
 /* 阳光外晕：与圆盘共用 --dsh-oc-x，理论上不可能错位 */
 .dsh-oc-glow{position:absolute;left:${INSET}px;top:50%;width:${KNOB}px;height:${KNOB}px;
 margin-top:${-KNOB / 2}px;border-radius:50%;
 background:radial-gradient(circle,rgba(255,228,145,.95) 0%,rgba(255,196,64,.5) 42%,rgba(255,180,40,0) 72%);
 opacity:0;transform:translateX(var(--dsh-oc-x));
-transition:opacity .5s ease,transform .6s cubic-bezier(.56,1.35,.52,1)}
+transition:opacity .85s ease,transform var(--dsh-oc-move) var(--dsh-oc-ease)}
 #dsh-overclock-toggle[data-state="on"] .dsh-oc-glow{opacity:1}
 
 /* 圆盘：关态月盘（银灰），开态暖阳（琥珀）。3D 质感靠"外投影 + 内侧暗边 + 内侧亮边"三层叠出来。 */
@@ -201,7 +248,7 @@ background:linear-gradient(150deg,#f4f7fb 0%,#ccd3e0 52%,#a2acbf 100%);
 box-shadow:0 1px 3px rgba(0,0,0,.5),inset -2px -3px 5px rgba(60,70,95,.35),
 inset 2px 2px 4px rgba(255,255,255,.75);
 transform:translateX(var(--dsh-oc-x));
-transition:transform .6s cubic-bezier(.56,1.35,.52,1),background .5s ease,box-shadow .5s ease}
+transition:transform var(--dsh-oc-move) var(--dsh-oc-ease),background .9s ease,box-shadow .9s ease}
 #dsh-overclock-toggle[data-state="on"] .dsh-oc-knob{
 background:linear-gradient(150deg,#fff4c9 0%,#ffcc33 52%,#f29400 100%);
 box-shadow:0 0 9px 1px rgba(255,190,60,.65),0 1px 3px rgba(0,0,0,.35),
@@ -211,14 +258,14 @@ inset -2px -3px 5px rgba(170,100,0,.35),inset 2px 2px 5px rgba(255,252,225,.9)}
 .dsh-oc-knob::after{content:'';position:absolute;inset:-2px;border-radius:50%;
 background:conic-gradient(from 0deg,rgba(255,255,255,0) 0deg,rgba(255,255,255,.75) 32deg,
 rgba(255,255,255,0) 78deg,rgba(255,255,255,0) 360deg);
-opacity:0;transition:opacity .4s ease}
+opacity:0;transition:opacity .6s ease}
 #dsh-overclock-toggle[data-state="on"] .dsh-oc-knob::after{opacity:1;
 animation:dsh-oc-sheen 3.4s linear infinite}
 @keyframes dsh-oc-sheen{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 
-/* 环形山：关态可见，开态淡出 */
+/* 环形山：关态可见，开态淡出。用 .7s 让它们在前半程化掉，而不是"啪"地消失。 */
 .dsh-oc-crater{position:absolute;border-radius:50%;background:rgba(118,130,152,.6);
-box-shadow:inset 0 1px 1px rgba(40,50,70,.45);opacity:1;transition:opacity .35s ease}
+box-shadow:inset 0 1px 1px rgba(40,50,70,.45);opacity:1;transition:opacity .7s ease}
 .dsh-oc-crater:nth-child(1){width:5px;height:5px;left:3px;top:8px}
 .dsh-oc-crater:nth-child(2){width:3px;height:3px;left:9.5px;top:3.5px}
 .dsh-oc-crater:nth-child(3){width:2.5px;height:2.5px;left:10px;top:10px}
@@ -244,8 +291,9 @@ box-shadow:inset 0 0 0 1px currentColor !important}
 
 /* 尊重"减少动态效果"：全部停掉，状态依然靠位置与配色可读 */
 @media (prefers-reduced-motion:reduce){
-.dsh-oc-track,.dsh-oc-sky::after,.dsh-oc-stars,.dsh-oc-star,.dsh-oc-glow,.dsh-oc-knob,
-.dsh-oc-knob::after,.dsh-oc-crater{transition:none !important;animation:none !important}}
+.dsh-oc-track,.dsh-oc-sky::after,.dsh-oc-stars,.dsh-oc-star,.dsh-oc-clouds,.dsh-oc-cloud,
+.dsh-oc-glow,.dsh-oc-knob,.dsh-oc-knob::after,.dsh-oc-crater{
+transition:none !important;animation:none !important}}
 `
 
     /** 只插一次样式表；class 名带插件前缀，不会碰官方样式。 */
@@ -274,13 +322,21 @@ box-shadow:inset 0 0 0 1px currentColor !important}
       return out
     }
 
-    /** 昼夜场景：一层夜空/晴空、一层星星、一团阳光、一轮日月。 */
+    /** 白昼的云。位置交给 CSS 的 nth-child，标记里不塞内联几何。 */
+    function clouds() {
+      const out = []
+      for (let i = 0; i < CLOUD_COUNT; i += 1) out.push(h('span', { key: 'cloud' + i, className: 'dsh-oc-cloud' }))
+      return out
+    }
+
+    /** 昼夜场景：天空 / 星星 / 云 / 阳光 / 日月。顺序即 z 序，圆盘最后画。 */
     function scene() {
       return h(
         'span',
         { className: 'dsh-oc-track', 'aria-hidden': 'true' },
         h('span', { className: 'dsh-oc-sky' }),
         h('span', { className: 'dsh-oc-stars' }, stars()),
+        h('span', { className: 'dsh-oc-clouds' }, clouds()),
         h('span', { className: 'dsh-oc-glow' }),
         h('span', { className: 'dsh-oc-knob' }, craters()),
       )
