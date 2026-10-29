@@ -1,8 +1,8 @@
 {
   "name": "@zws/dsh-overclock-mode",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
-  "description": "Per-session Overclock mode for DeepSeek Harness: a composer switch that appends an unlimited-budget instruction to that session's system prompt only.",
+  "description": "Per-session Overclock mode for DeepSeek Harness: an animated day/night switch that appends an unlimited-budget instruction to that one session's system prompt.",
   "type": "module",
   "main": "index.js",
   "exports": {
