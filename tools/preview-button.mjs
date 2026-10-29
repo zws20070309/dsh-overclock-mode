@@ -21,10 +21,8 @@ const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..')
 const source = readFileSync(join(root, 'client.js'), 'utf8')
 
-/** 预览里要展示的行程节点：0 → 100%，用来检查过渡途中圆盘与光晕是否始终对齐。 */
+/** 预览里要展示的行程节点：0 → 100%。每一格都是真实过渡被定格在该时刻的结果。 */
 const FRAMES = [0, 0.25, 0.5, 0.75, 1]
-/** 与 client.js 的几何保持一致：圆盘行程 = 42 - 17 - 3*2。 */
-const TRAVEL = 19
 
 const page = `<!DOCTYPE html>
 <html lang="zh">
@@ -49,16 +47,24 @@ const page = `<!DOCTYPE html>
   .zoomcell > .dsh-oc{position:absolute;left:0;top:50%;transform:translateY(-50%) scale(4);
                       transform-origin:left center}
   .zoomcap{position:absolute;left:0;bottom:0;font-size:11px;color:#9ca3af;letter-spacing:.04em}
-  .frames{display:flex;align-items:flex-end;gap:16px;flex-wrap:wrap}
-  .frame{display:flex;flex-direction:column;align-items:center;gap:6px}
-  .frame .cap{font-size:11px;color:#9ca3af;font-variant-numeric:tabular-nums}
-  .nofx,.nofx *{transition:none!important;animation:none!important}
+  .frames{display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap}
+  /* 轨道 42x23 放大 4 倍 = 168x92；这一行隐去文字只看轨道，所以格子按 168x92 留。
+     按钮的内边距与药丸底色也在这里去掉：缩放不改变布局盒，留着的内边距会让
+     4 倍按钮比格子还宽、压到下一格上（第一版就是这样，裁出来的"帧"里混进了邻居的底）。 */
+  .framecell{position:relative;flex:none;width:180px;height:112px;background:#fff;
+             border:1px solid #e5e7eb;border-radius:10px;overflow:hidden}
+  .framecell > .dsh-oc{position:absolute;left:6px;top:8px;padding:0;gap:0;
+                       transform:scale(4);transform-origin:left top;
+                       background:none!important;box-shadow:none!important}
+  .framecell .dsh-oc-text{display:none}
+  .framecap{position:absolute;left:9px;bottom:5px;font-size:11px;color:#9ca3af;
+            font-variant-numeric:tabular-nums}
   .err{color:#c00;white-space:pre-wrap;font:12px/1.5 ui-monospace,monospace}
 </style>
 </head>
 <body>
   <h1>超频模式 · 开关预览</h1>
-  <p class="note">用真实的 client.js 渲染（同一个 apply()、同一份样式表）。第 3 行是过渡途中的采样帧。</p>
+  <p class="note">用真实的 client.js 渲染（同一个 apply()、同一份样式表）。第 3 行定格的是浏览器真的跑过一遍的过渡。</p>
 
   <h2>1 · 实际大小（浅底 / 深底）</h2>
   <div class="row">
@@ -72,7 +78,11 @@ const page = `<!DOCTYPE html>
     <div class="zoomcell" id="zoom-on"></div>
   </div>
 
-  <h2>3 · 过渡采样帧（0% → 100%）</h2>
+  <h2>3 · 真实过渡帧（0% → 100%，放大 4 倍只留轨道）</h2>
+  <p class="note" style="margin:0 0 10px">不是手画的中间态：每格先把按钮以关态放进 DOM，再真的翻到开态，
+  然后用 <code>Animation.currentTime</code> 把它自己那一批过渡对象定格在 t 时刻 ——
+  天空、星星、云、光晕、圆盘读的就是浏览器当时算出来的值。<code>t</code> 是"当前时刻"，
+  所以云、环山这些时长更短的过渡会先走完，正是真实观感。</p>
   <div class="frames" id="frames"></div>
 
   <h2>4 · 其余状态（继承 / 忙碌 / 错误 / 无会话）</h2>
@@ -85,7 +95,6 @@ const page = `<!DOCTYPE html>
 <script>
 var CLIENT_SRC = ${JSON.stringify(source)};
 var FRAMES = ${JSON.stringify(FRAMES)};
-var TRAVEL = ${TRAVEL};
 
 (function () {
   function noop() {}
@@ -211,25 +220,58 @@ var TRAVEL = ${TRAVEL};
     zoomInto('zoom-off', 'off', 'OFF · 月亮')
     zoomInto('zoom-on', 'on', 'ON · 太阳')
 
-    // 3 · 过渡采样帧：改行程变量与星星透明度，把动画途中摊开看
+    // 3 · 真实过渡帧：让浏览器真的跑一次 off→on，再用 Animation.currentTime 定格。
+    //     关键顺序：先以关态入 DOM → 强制一次布局 → 翻状态 → 再强制一次布局，
+    //     否则"插入即改状态"会被合并进同一次样式计算，过渡根本不会建立。
     var host = document.getElementById('frames')
+    var longest = 0
+    var probed = []
     FRAMES.forEach(function (p) {
-      var btn = render(p === 0 ? 'off' : 'on')
-      btn.classList.add('nofx')
-      var track = btn.querySelector('.dsh-oc-track')
-      var stars = btn.querySelector('.dsh-oc-stars')
-      track.style.setProperty('--dsh-oc-x', (TRAVEL * p).toFixed(1) + 'px')
-      stars.style.opacity = String(1 - p)
-      stars.style.transform = 'translateY(' + (-6 * p).toFixed(1) + 'px) scale(' + (1 - 0.6 * p).toFixed(2) + ')'
-      var wrap = document.createElement('div')
-      wrap.className = 'frame'
-      wrap.appendChild(btn)
+      var cell = document.createElement('div')
+      cell.className = 'framecell'
+      var btn = render('off')
+      cell.appendChild(btn)
+      host.appendChild(cell)
+
+      void btn.offsetWidth
+      btn.setAttribute('data-state', 'on')
+      void btn.offsetWidth
+
+      var anims = btn.getAnimations ? btn.getAnimations({ subtree: true }) : []
+      anims.forEach(function (a) {
+        try { a.pause() } catch (e) { return }
+        var timing = a.effect.getTiming()
+        if (a.transitionProperty !== undefined) longest = Math.max(longest, timing.duration)
+      })
+      // 用统一时刻（最长那条过渡的比例）定格，才是"同一瞬间"的真实截面。
+      var at = Math.round(longest * p)
+      anims.forEach(function (a) {
+        try {
+          if (a.transitionProperty !== undefined) a.currentTime = at
+          else a.currentTime = 1200            // 关键帧动画（闪烁/自转/飘移）也固定相位，预览才可复现
+        } catch (e) {}
+      })
+      if (p === 0) {
+        probed = anims
+          .filter(function (a) { return a.transitionProperty !== undefined })
+          .map(function (a) { return a.transitionProperty })
+      }
+
       var cap = document.createElement('span')
-      cap.className = 'cap'
-      cap.textContent = Math.round(p * 100) + '%'
-      wrap.appendChild(cap)
-      host.appendChild(wrap)
+      cap.className = 'framecap'
+      cap.textContent = Math.round(p * 100) + '% · t=' + at + 'ms'
+      cell.appendChild(cap)
     })
+
+    // 过渡对象数量自检：为 0 就说明这一行什么都没验证到，必须在页面上说出来。
+    if (probed.length === 0) {
+      document.body.insertAdjacentHTML('beforeend',
+        '<pre class="err">第 3 行没有拿到任何过渡对象：off→on 没有建立过渡，这一行是无效的。</pre>')
+    } else {
+      document.body.insertAdjacentHTML('beforeend',
+        '<p class="note">第 3 行实际定格到的过渡对象：' + probed.length + ' 条 — ' +
+        probed.join(', ') + '（最长 ' + Math.round(longest) + 'ms）</p>')
+    }
 
     document.title = '预览就绪'
 

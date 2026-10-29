@@ -167,10 +167,10 @@ assert.equal(offTree.props['data-state'], 'off')
 const kinds = offTree.children.map((child) => child.props.className)
 assert.deepEqual(plain(kinds), ['dsh-oc-text', 'dsh-oc-track'])
 
-// 轨道是「天空 / 星星 / 阳光 / 日月」四层，顺序即 z 序（天空最底、圆盘最后画）。
+// 轨道是「天空 / 星星 / 云 / 阳光 / 日月」五层，顺序即 z 序（天空最底、圆盘最后画）。
 const track = offTree.children[1]
 const layers = track.children.map((child) => child.props.className)
-assert.deepEqual(plain(layers), ['dsh-oc-sky', 'dsh-oc-stars', 'dsh-oc-glow', 'dsh-oc-knob'])
+assert.deepEqual(plain(layers), ['dsh-oc-sky', 'dsh-oc-stars', 'dsh-oc-clouds', 'dsh-oc-glow', 'dsh-oc-knob'])
 
 // 真实 React 会把数组子节点展开，替身不会 —— 这里统一拍平后再数。
 const flat = (node) => (node.children ?? []).flat(Infinity).filter((c) => c !== null && c !== undefined)
@@ -185,7 +185,16 @@ assert.ok(starClasses.every((c) => c === 'dsh-oc-star'), '星星类名统一')
 const starKeys = flat(starLayer).map((c) => c.props.key)
 assert.equal(new Set(starKeys).size, starKeys.length, 'stars carry unique keys')
 
-const knob = track.children[3]
+// 云层紧跟在星星之后。
+const cloudLayer = track.children[2]
+assert.equal(cloudLayer.props.className, 'dsh-oc-clouds')
+const cloudClasses = flat(cloudLayer).map((c) => c.props.className)
+assert.equal(cloudClasses.length, 3, '三朵云')
+assert.ok(cloudClasses.every((c) => c === 'dsh-oc-cloud'), '云类名统一')
+const cloudKeys = flat(cloudLayer).map((c) => c.props.key)
+assert.equal(new Set(cloudKeys).size, cloudKeys.length, 'clouds carry unique keys')
+
+const knob = track.children[4]
 const craterClasses = flat(knob).map((c) => c.props.className)
 assert.equal(craterClasses.length, 3, '三个环形山')
 assert.ok(craterClasses.every((c) => c === 'dsh-oc-crater'), '环形山类名统一')
@@ -194,18 +203,63 @@ assert.ok(craterClasses.every((c) => c === 'dsh-oc-crater'), '环形山类名统
 assert.equal(layers[layers.length - 1], 'dsh-oc-knob', 'knob paints last')
 
 // ── 样式断言 ────────────────────────────────────────────────────────────────
-// CSS 是模板字符串，规则体里有 ${INSET} 这类占位符，而 ${...} 自带一个 `}`；
-// 直接对源码用 [^}]* 圈规则体会被那个 } 提前截断（我就踩了）。
-// 先把占位符抹平成 `0`，花括号就恢复成"规则边界"这一个含义，再按规则取值。
-const css = source.replace(/\$\{[^}]*\}/g, '0')
-const ruleBody = (selector) => {
-  const at = css.indexOf(selector + '{')
-  assert.ok(at >= 0, '找不到规则 ' + selector)
-  const from = at + selector.length + 1
-  const to = css.indexOf('}', from)
-  assert.ok(to > from, '规则没有闭合: ' + selector)
-  return css.slice(from, to)
+// 两个坑都在这里踩过，所以解析不图省事：
+//   1. CSS 是模板字符串，规则体里有 ${INSET} 这类占位符，而 ${...} 自带一个 `}`；
+//      用 [^}]* 圈规则体会被那个 } 提前截断。
+//   2. `.dsh-oc-cloud::after` 不能用 indexOf(选择器 + '{') 找 ——
+//      分组规则 `.dsh-oc-cloud::before,.dsh-oc-cloud::after{...}` 的后半截正好长一样，
+//      会静默拿到公共声明（content/position…），后面算出一堆 undefined 也不报错。
+// 所以先**只把 CSS 那段模板字符串取出来**（整份源码里 JS 的花括号会把深度算歪，
+// 第一版按整份源码扫描，CSS 规则全都落在 depth 2 上，`.dsh-oc-glow` 直接找不到），
+// 剥掉注释与占位符，再老老实实扫描花括号（带嵌套深度），
+// 最后按"选择器列表里的精确一项 + 同深度"匹配。
+const CSS_HEAD = 'const CSS = `'
+const cssStart = source.indexOf(CSS_HEAD) + CSS_HEAD.length
+const css = source
+  .slice(cssStart, source.indexOf('`', cssStart))
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+  .replace(/\$\{[^}]*\}/g, '0')
+assert.ok(css.includes('.dsh-oc-track{'), 'CSS 模板字符串被成功截取')
+const rules = []
+{
+  const stack = []
+  let buf = ''
+  for (let i = 0; i < css.length; i += 1) {
+    const ch = css[i]
+    if (ch === '{') {
+      stack.push({ sel: buf.trim(), start: i + 1 })
+      buf = ''
+    } else if (ch === '}') {
+      const open = stack.pop()
+      // 深度必须一起记：早退的 @media 里也有一份 `.dsh-oc-track,...{transition:none}`
+      // 的选择器列表，只按"最后一条匹配"取就会把生产声明换成这条兜底声明。
+      if (open !== undefined) rules.push({ sel: open.sel, body: css.slice(open.start, i), depth: stack.length })
+      buf = ''
+    } else {
+      buf += ch
+    }
+  }
 }
+/** 取同深度下最后一条精确匹配的规则：简写规则在前、逐条细化的在后，后者才是最终值。 */
+const ruleBody = (selector, depth = 0) => {
+  let found
+  for (const rule of rules) {
+    if (rule.depth !== depth) continue
+    if (rule.sel.split(',').map((s) => s.trim()).includes(selector)) found = rule.body
+  }
+  assert.ok(found !== undefined, '找不到规则 ' + selector + '（depth ' + depth + '）')
+  return found
+}
+/** 规则体 → 声明表。用 split 解析，不写正则：反斜杠在多层转义里太容易写错。 */
+const decls = (text) => {
+  const out = {}
+  for (const part of text.split(';')) {
+    const i = part.indexOf(':')
+    if (i >= 0) out[part.slice(0, i).trim()] = part.slice(i + 1).trim()
+  }
+  return out
+}
+const num = (value) => parseFloat(value)
 
 assert.ok(css.includes('--dsh-oc-x'), 'a single custom property drives the travel')
 assert.ok(ruleBody('.dsh-oc-glow').includes('translateX(var(--dsh-oc-x))'), 'glow reads the shared travel var')
@@ -235,8 +289,7 @@ assert.ok(source.includes('data-plugin-css'), 'stylesheet is tagged for idempote
 assert.ok(css.includes('@keyframes dsh-oc-twinkle'), 'stars twinkle at night')
 assert.ok(css.includes('@keyframes dsh-oc-sheen'), 'sun has a rotating highlight')
 assert.ok(css.includes('@keyframes dsh-oc-breathe'), 'busy state breathes')
-// 回弹缓动：0.35 的过冲就是"弹一下"的来源。
-assert.ok(css.includes('cubic-bezier(.56,1.35,.52,1)'), 'uses the overshoot easing')
+assert.ok(css.includes('@keyframes dsh-oc-drift'), 'clouds drift slowly')
 // 天空交叉淡入：两个渐变之间无法插值，必须两层叠透明度。
 assert.ok(css.includes('.dsh-oc-sky::after'), 'day sky is a cross-fading overlay')
 assert.ok(ruleBody('.dsh-oc-sky').includes('linear-gradient'), 'night sky is a gradient')
@@ -260,8 +313,120 @@ for (let i = 1; i <= 3; i += 1) {
   assert.ok(css.includes('.dsh-oc-crater:nth-child(' + i + ')'), 'crater ' + i + ' is positioned')
 }
 assert.ok(css.includes('prefers-reduced-motion'), 'respects reduced motion')
-// 减少动效里必须把动画也停掉，只停 transition 不够。
-assert.ok(ruleBody('@media (prefers-reduced-motion:reduce)').includes('animation:none'),
-  'reduced motion also stops animations')
+// 减少动效里必须把动画也停掉，只停 transition 不够，而且新增的层不能漏掉。
+const reduced = ruleBody('@media (prefers-reduced-motion:reduce)')
+assert.ok(reduced.includes('animation:none'), 'reduced motion also stops animations')
+for (const layer of ['.dsh-oc-sky::after', '.dsh-oc-stars', '.dsh-oc-clouds', '.dsh-oc-cloud',
+  '.dsh-oc-glow', '.dsh-oc-knob', '.dsh-oc-crater']) {
+  assert.ok(reduced.includes(layer), '减少动效要覆盖 ' + layer)
+}
+
+// ── 行程时长：用户明确提过"太快了，跟没有一样"，所以这条要能被测出来 ─────────────
+// 上一版是 .6s + cubic-bezier(.56,1.35,.52,1)。实测（把每条过渡的 currentTime 手动擦洗）
+// 可见位移只覆盖时长的 45%：600ms 里 240ms 就走完 86% 的行程，剩下 360ms 在收 4% 的尾。
+// 所以这里既钉"时长够长"，也钉"位移铺得开"，还钉"三层读同一个变量"。
+const trackRule = decls(ruleBody('.dsh-oc-track'))
+const moveMs = num(trackRule['--dsh-oc-move']) * 1000
+assert.ok(Number.isFinite(moveMs) && moveMs >= 1000, '共享行程时长要 ≥1000ms，当前 ' + moveMs + 'ms')
+const ease = trackRule['--dsh-oc-ease']
+assert.ok(ease.startsWith('cubic-bezier('), '共享缓动是一个 cubic-bezier，当前 ' + ease)
+for (const selector of ['.dsh-oc-knob', '.dsh-oc-glow', '.dsh-oc-stars']) {
+  const transition = decls(ruleBody(selector)).transition
+  assert.ok(transition.includes('var(--dsh-oc-move)'), selector + ' 的位移要读共享时长')
+  assert.ok(transition.includes('var(--dsh-oc-ease)'), selector + ' 的位移要读共享缓动')
+}
+assert.ok(!css.includes('.56,1.35,.52,1'), '不再使用"半程就到终点"的旧缓动')
+assert.ok(ruleBody('.dsh-oc-knob').includes('transform var(--dsh-oc-move)'),
+  '圆盘位移走共享时长')
+// "可见位移窗口"：把缓动的横轴（时间）在纵轴 5%~95%（行程）处取出来，
+// 窗口占时长的比例就是动效"能被看见"的比例。旧的只有 0.45，新的要 ≥0.6。
+const bezierAt = (x1, y1, x2, y2, target) => {
+  const yAt = (t) => 3 * (1 - t) ** 2 * t * y1 + 3 * (1 - t) * t ** 2 * y2 + t ** 3
+  const xAt = (t) => 3 * (1 - t) ** 2 * t * x1 + 3 * (1 - t) * t ** 2 * x2 + t ** 3
+  let lo = 0
+  let hi = 1
+  for (let i = 0; i < 60; i += 1) {
+    const mid = (lo + hi) / 2
+    if (yAt(mid) < target) lo = mid
+    else hi = mid
+  }
+  return xAt((lo + hi) / 2)
+}
+const [b1, b2, b3, b4] = ease.slice('cubic-bezier('.length, -1).split(',').map((v) => parseFloat(v))
+assert.ok([b1, b2, b3, b4].every(Number.isFinite), '缓动的四个参数要能解析：' + ease)
+const window95 = bezierAt(b1, b2, b3, b4, 0.95) - bezierAt(b1, b2, b3, b4, 0.05)
+assert.ok(window95 >= 0.6,
+  '可见位移要铺开到 60% 以上的时长，当前 ' + Math.round(window95 * 100) + '%')
+assert.ok(moveMs * window95 >= 700,
+  '可见运动总时长要 ≥700ms，当前 ' + Math.round(moveMs * window95) + 'ms')
+
+// ── 白云：只属于白昼，而且必须完整落在胶囊形轨道里 ─────────────────────────────
+assert.ok(ruleBody('.dsh-oc-cloud').includes('opacity:0'), '云默认（夜间）不可见')
+assert.ok(ruleBody('#dsh-overclock-toggle[data-state="on"] .dsh-oc-cloud').includes('opacity:'),
+  '云只在开态显形')
+for (let i = 1; i <= 3; i += 1) {
+  assert.ok(css.includes('.dsh-oc-cloud:nth-child(' + i + ')'), '云 ' + i + ' 有定位')
+}
+// 轨道左端是半径 11.5 的圆角，云一旦越界就会被 overflow:hidden 切掉一块。
+// 云在夜里本来不可见，但"太阳左边"的云全都落在左半边 —— 正是圆角那一侧，
+// 所以必须按几何算，不能靠肉眼看（最早那版 left:3,top:5 的凸起顶端离边界只有 0.24px，
+// 放大 16 倍才看出来被切了）。
+const TRACK_W = 42
+const TRACK_H = 23
+const RADIUS = TRACK_H / 2
+const bumpRatio = ['.dsh-oc-cloud::before', '.dsh-oc-cloud::after'].map((sel) => {
+  const d = decls(ruleBody(sel))
+  return { left: num(d.left) / 100, bottom: num(d.bottom) / 100, width: num(d.width) / 100, height: num(d.height) / 100 }
+})
+assert.ok(bumpRatio.every((b) => Number.isFinite(b.width) && b.width > 0), '凸起比例能解析')
+const inCapsule = (x, y, margin) => {
+  const r = RADIUS - margin
+  if (x < RADIUS) return (x - RADIUS) ** 2 + (y - RADIUS) ** 2 <= r * r
+  if (x > TRACK_W - RADIUS) return (x - (TRACK_W - RADIUS)) ** 2 + (y - RADIUS) ** 2 <= r * r
+  return Math.abs(y - RADIUS) <= r
+}
+for (let i = 1; i <= 3; i += 1) {
+  const d = decls(ruleBody('.dsh-oc-cloud:nth-child(' + i + ')'))
+  const L = num(d.left)
+  const T = num(d.top)
+  const w = num(d.width)
+  const h = num(d.height)
+  assert.ok([L, T, w, h].every(Number.isFinite), '云 ' + i + ' 的几何能解析')
+  const corner = Math.min(3, h / 2)
+  const inBase = (x, y) => {
+    if (x < L || x > L + w || y < T || y > T + h) return false
+    const dx = Math.max(L + corner - x, 0, x - (L + w - corner))
+    const dy = Math.max(T + corner - y, 0, y - (T + h - corner))
+    return dx * dx + dy * dy <= corner * corner + 1e-9
+  }
+  const ellipses = bumpRatio.map((b) => ({
+    cx: L + b.left * w + (b.width * w) / 2,
+    cy: T + h - b.bottom * h - (b.height * h) / 2,
+    rx: (b.width * w) / 2,
+    ry: (b.height * h) / 2,
+  }))
+  const inSilhouette = (x, y) =>
+    inBase(x, y) ||
+    ellipses.some((e) => ((x - e.cx) / e.rx) ** 2 + ((y - e.cy) / e.ry) ** 2 <= 1 + 1e-9)
+  let minMargin = Infinity
+  for (let x = Math.min(L, ...ellipses.map((e) => e.cx - e.rx)); x <= Math.max(L + w, ...ellipses.map((e) => e.cx + e.rx)); x += 0.1) {
+    for (let y = Math.min(T, ...ellipses.map((e) => e.cy - e.ry)); y <= Math.max(T + h, ...ellipses.map((e) => e.cy + e.ry)); y += 0.1) {
+      if (!inSilhouette(x, y)) continue
+      let lo = 0
+      let hi = RADIUS
+      for (let k = 0; k < 34; k += 1) {
+        const mid = (lo + hi) / 2
+        if (inCapsule(x, y, mid)) lo = mid
+        else hi = mid
+      }
+      if (lo < minMargin) minMargin = lo
+    }
+  }
+  assert.ok(minMargin >= 1, '云 ' + i + ' 的剪影离圆角边界只有 ' + minMargin.toFixed(2) + 'px，会被切角')
+}
+// 云的飘移幅度必须小于"云右缘到太阳左缘"的余量，否则飘着飘着就钻到太阳底下了。
+const driftPx = num(/translateX\((-?[\d.]+)px\)/.exec(ruleBody('@keyframes dsh-oc-drift'))?.[1] ?? 'NaN')
+assert.ok(Number.isFinite(driftPx) && driftPx > 0, '云有横向飘移')
+assert.ok(driftPx <= 3, '飘移幅度不要超过 3px，当前 ' + driftPx + 'px')
 
 console.log('client.test.mjs: ok')
