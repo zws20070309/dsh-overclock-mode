@@ -215,10 +215,26 @@ assert.equal(layers[layers.length - 1], 'dsh-oc-knob', 'knob paints last')
 // 最后按"选择器列表里的精确一项 + 同深度"匹配。
 const CSS_HEAD = 'const CSS = `'
 const cssStart = source.indexOf(CSS_HEAD) + CSS_HEAD.length
-const css = source
+const cssRaw = source
   .slice(cssStart, source.indexOf('`', cssStart))
   .replace(/\/\*[\s\S]*?\*\//g, '')
-  .replace(/\$\{[^}]*\}/g, '0')
+// 占位符要按**真实值**代入，不能一律抹成 0：否则 `${TRAVEL}` 变成 `translateX(0px)`，
+// 和关态的起点一模一样，测试就再也分不出"有没有终点值"了（踩过）。
+// 几何常量与 client.js 顶部保持一致。
+const GEO = { TRACK_W: 42, TRACK_H: 23, KNOB: 17, INSET: 3 }
+GEO.TRAVEL = GEO.TRACK_W - GEO.KNOB - GEO.INSET * 2
+const css = cssRaw.replace(/\$\{([^}]+)\}/g, (whole, expr) => {
+  // 目前只有两种形态：单个常量名，以及 ${-KNOB / 2} 这种一行算式。
+  const value = /^-?[A-Z_]+(\s*\/\s*-?[\d.]+)?$/.test(expr.trim())
+    ? eval(expr.replace(/\b([A-Z_]+)\b/g, (m) => {
+        assert.ok(m in GEO, '测试不认识这个占位符：' + m)
+        return String(GEO[m])
+      })) // eslint-disable-line no-eval
+    : NaN
+  assert.ok(Number.isFinite(value), '无法展开的占位符：${' + expr + '}')
+  return String(value)
+})
+assert.ok(!css.includes('${'), 'CSS 里不应再有未展开的占位符')
 assert.ok(css.includes('.dsh-oc-track{'), 'CSS 模板字符串被成功截取')
 const rules = []
 {
@@ -261,15 +277,41 @@ const decls = (text) => {
 }
 const num = (value) => parseFloat(value)
 
-assert.ok(css.includes('--dsh-oc-x'), 'a single custom property drives the travel')
-assert.ok(ruleBody('.dsh-oc-glow').includes('translateX(var(--dsh-oc-x))'), 'glow reads the shared travel var')
-assert.ok(ruleBody('.dsh-oc-knob').includes('translateX(var(--dsh-oc-x))'), 'knob reads the shared travel var')
-// 开态只改这一个变量，改别的都是重复真相。
-assert.ok(ruleBody('#dsh-overclock-toggle[data-state="on"] .dsh-oc-track').includes('--dsh-oc-x:'),
-  'on-state only flips the travel var')
-// 开态那条圆盘规则只管配色，不许再写一个 translateX（两处真相必然错位）。
-assert.ok(!ruleBody('#dsh-overclock-toggle[data-state="on"] .dsh-oc-knob').includes('translateX('),
-  'on-state must not hardcode a second translateX for the knob')
+// ── 位移：三处必须写同一对端点值，不经过自定义属性中转 ─────────────────────────
+// 先更正一条我自己写错、后来被实测推翻的说法：
+//   曾经以为"未注册的自定义属性不插值"，所以把位移改成直接写 translateX 端点值。
+//   实测（同页 A/B，逐帧采样两个方向）后发现：新旧写法逐帧**完全相同**，
+//   现代 Chromium 对 var() 引用的未注册属性也能逐帧插值。那个结论是错的。
+// 保留这个改写是因为它本身更直白（少一层间接、端点一眼可见），而不是因为"修好了什么"。
+// 真正的掉帧根因见下面的 will-change 与文件头的说明。
+assert.ok(!css.includes('--dsh-oc-x'), '位移不再经过自定义属性中转')
+const TRAVEL_PX = 42 - 17 - 3 * 2
+assert.equal(TRAVEL_PX, 19, '几何常量没被改坏')
+// 起点：三个会跟着圆盘走的层，关态都必须是 translateX(0)。
+for (const selector of ['.dsh-oc-glow', '.dsh-oc-knob', '.dsh-oc-pulse']) {
+  assert.ok(ruleBody(selector).includes('transform:translateX(0)'),
+    selector + ' 关态起点必须是 translateX(0)')
+  // 终点：开态规则里写死 TRAVEL（19px），三处必须一致，否则会走岔。
+  const onRule = ruleBody('#dsh-overclock-toggle[data-state="on"] ' + selector)
+  assert.ok(onRule.includes('transform:translateX(19px)'),
+    selector + ' 开态终点必须是 translateX(19px)，当前：' + onRule)
+}
+// 光晕与回声的开态规则只该有位移（+ 光晕的 opacity），不该混进别的 transform。
+assert.ok(!ruleBody('#dsh-overclock-toggle[data-state="on"] .dsh-oc-knob').includes('scale('),
+  '圆盘开态不许混入 scale（会和位移互相覆盖）')
+
+// ── will-change：位移必须走合成器 ───────────────────────────────────────────
+// 实测（真实 DSH、真实鼠标点击、逐帧采样）：
+//   页面加载后的**第一次**点击 ON→OFF：104ms→201ms 有 97ms 空档，期间动画时间轴照常前进，
+//     屏幕却只更新了 2 帧，恢复后位移"追上来" → 人眼读作"卡一下再猛冲"（这就是瞬移的来源）。
+//   紧接着的第 2、3 次点击：每 6ms 一帧、无任何 >40ms 的空档，完全平滑。
+//   同时 PerformanceObserver 的长任务列表是**空的** —— 不是 JS 卡，是首次现建合成层/上传纹理。
+// will-change:transform 把这笔开销提前到布局阶段，首次点击就不用现付。
+// 三个跟着位移走的层都必须声明，漏一个那一层就仍会在首次掉帧。
+for (const selector of ['.dsh-oc-knob', '.dsh-oc-glow', '.dsh-oc-pulse']) {
+  assert.ok(ruleBody(selector).includes('will-change:transform'),
+    selector + ' 需要 will-change:transform 提前建层，否则首次点击会掉帧')
+}
 
 // 没有 sessionId 时禁用，且提示是"先进入会话"，不是空白 title。
 const noSession = toggle({ t, api: () => remoteStub, sessionId: undefined })

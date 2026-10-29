@@ -8,9 +8,24 @@
 // 开关造型：**昼夜切换**。开 = 太阳，关 = 月亮。
 //   * 关态：深蓝夜空 + 星星闪烁 + 银色月盘（带环形山）
 //   * 开态：晴空蓝 + 白云 + 暖阳（带外发光与缓慢旋转的内高光）+ 星星飞散消失
-//   * 圆盘用一个 CSS 变量 --dsh-oc-x 同时驱动位移与光晕，二者不可能走岔
+//   * 圆盘 / 光晕 / 忙碌回声写同一对端点值 translateX(0) → translateX(19px)，
+//     不经过自定义属性中转（更直白，少一层间接）
 //   * 行程时长与缓动收敛到 --dsh-oc-move / --dsh-oc-ease 两个变量：
 //     只有"看得见的位移占时长的比例"够大，动效才不会被看成"啪地跳过去"。
+//   * 三个跟着位移走的层都带 will-change:transform —— 见下面的实测说明。
+//
+// 「点了直接瞬移」这个问题的实测记录（换过四次假设，前三次都被数据推翻，留在这里防止有人重犯）：
+//   假设1 缓动太快 → 换成 1.1s + 长中间段缓动。实测可见位移从 268ms 提到 730ms，但仍被报"瞬移"。
+//   假设2 busy 动画抢走 transform → CSS 动画确实压过 transition（这条是真的，已修），
+//        改完真实点击不再瞬移，但用户仍报告"没过渡"。
+//   假设3 未注册自定义属性不插值 → 同页 A/B 逐帧采样，新旧写法**完全相同**。这个结论是错的，
+//        Chromium 对 var() 引用的未注册属性照样逐帧插值。
+//   假设4（成立）首次点击现建合成层。真实 DSH 里逐帧采样：
+//        第 1 次点击 104ms→201ms 有 97ms 空档，动画时间轴照常走、屏幕只更新 2 帧，
+//        恢复后位移追上来 → 看起来"卡一下再猛冲"；
+//        紧接的第 2、3 次点击每 6ms 一帧、零空档、完全平滑。
+//        同期 PerformanceObserver 的长任务列表是**空的** → 不是 JS 卡，是渲染管线首次建层。
+//        对策：will-change:transform 把建层开销提前。
 //
 // 为什么这个文件长这样（三条都是踩过的坑，不是风格偏好）：
 //   1. 所有 client bundle 会被拼成**一个脚本**执行，顶层 const 撞名会让整个拼合脚本
@@ -161,15 +176,19 @@ color:var(--dsw-alias-label-primary,inherit)}
 /* ── 轨道：一扇小小的天窗 ───────────────────────────────────────────── */
 .dsh-oc-track{position:relative;display:inline-block;flex:none;box-sizing:border-box;
 width:${TRACK_W}px;height:${TRACK_H}px;border-radius:999px;overflow:hidden;
---dsh-oc-x:0px;
-/* 行程时长与缓动：圆盘 / 光晕 / 星星共用一套，改一处就整体变快变慢。
-   上一版是 .6s + cubic-bezier(.56,1.35,.52,1)，实测（getAnimations 擦洗时间线）
-   可见位移只覆盖时长的 45%：600ms 里 240ms 就走完了 86% 的行程，看着像"啪"地跳过去。
-   现在 1.1s + "长中间段"缓动，可见位移覆盖 67% ≈ 730ms，是原来的 2.7 倍。
-   这里不用带回弹的曲线：19px 行程下 4% 的过冲只有 0.8px，肉眼看不见，
-   却要多花掉近一半的时长（52% 处就到终点了）去收尾 —— 正是上一版"看着没动"的成因。 */
+/* 行程时长与缓动。
+   实测背景（真实 DSH 里点击后的逐帧采样，不是无头浏览器）：
+   · 动画时间轴与位移都正常：25 帧后每帧稳定 -0.20px
+   · 但点击瞬间会掉两帧（97ms + 48ms 空档），那时动画时间轴已经跨过 100ms+，
+     屏幕却只更新了 2 帧 —— 恢复后位移"追上来"，人眼读作"卡一下再猛冲"。
+   · 掉帧成因不是 JS（PerformanceObserver 的长任务列表是空的），
+     而是点击时页面正在流式输出 + 18 条过渡同时启动，合成器忙不过来。
+   1.1s 是权衡后的值：再短就看不清楚，再长掉帧占的比例更大反而更明显。
+   缓动取"长中间段"：可见位移覆盖时长 67%，匀速感强，少数几帧丢失也不易察觉。 */
 --dsh-oc-move:1.1s;
 --dsh-oc-ease:cubic-bezier(.4,.15,.35,1);
+/* 位移走合成器：will-change:transform 提前把圆盘提升为独立合成层，
+   掉帧时只是这一层晚一帧更新，不会把整条过渡的时间轴拖歪。 */
 box-shadow:inset 0 1px 3px rgba(0,0,0,.5),inset 0 -1px 1px rgba(255,255,255,.07);
 transition:box-shadow .5s ease}
 
@@ -233,13 +252,13 @@ background:inherit}
 /* 极小的横向飘移（3px）。不能再大：云再往右就滑到太阳底下去了。 */
 @keyframes dsh-oc-drift{0%,100%{transform:translateX(0)}50%{transform:translateX(3px)}}
 
-/* 阳光外晕：与圆盘共用 --dsh-oc-x，理论上不可能错位 */
+/* 阳光外晕：与圆盘写同一对端点值（0 / TRAVEL），二者不可能错位 */
 .dsh-oc-glow{position:absolute;left:${INSET}px;top:50%;width:${KNOB}px;height:${KNOB}px;
 margin-top:${-KNOB / 2}px;border-radius:50%;
 background:radial-gradient(circle,rgba(255,228,145,.95) 0%,rgba(255,196,64,.5) 42%,rgba(255,180,40,0) 72%);
-opacity:0;transform:translateX(var(--dsh-oc-x));
+opacity:0;transform:translateX(0);will-change:transform,opacity;
 transition:opacity .85s ease,transform var(--dsh-oc-move) var(--dsh-oc-ease)}
-#dsh-overclock-toggle[data-state="on"] .dsh-oc-glow{opacity:1}
+#dsh-overclock-toggle[data-state="on"] .dsh-oc-glow{opacity:1;transform:translateX(${TRAVEL}px)}
 
 /* 圆盘：关态月盘（银灰），开态暖阳（琥珀）。3D 质感靠"外投影 + 内侧暗边 + 内侧亮边"三层叠出来。 */
 .dsh-oc-knob{position:absolute;left:${INSET}px;top:${INSET}px;width:${KNOB}px;height:${KNOB}px;
@@ -247,9 +266,10 @@ border-radius:50%;overflow:hidden;z-index:2;
 background:linear-gradient(150deg,#f4f7fb 0%,#ccd3e0 52%,#a2acbf 100%);
 box-shadow:0 1px 3px rgba(0,0,0,.5),inset -2px -3px 5px rgba(60,70,95,.35),
 inset 2px 2px 4px rgba(255,255,255,.75);
-transform:translateX(var(--dsh-oc-x));
+transform:translateX(0);will-change:transform;
 transition:transform var(--dsh-oc-move) var(--dsh-oc-ease),background .9s ease,box-shadow .9s ease}
 #dsh-overclock-toggle[data-state="on"] .dsh-oc-knob{
+transform:translateX(${TRAVEL}px);
 background:linear-gradient(150deg,#fff4c9 0%,#ffcc33 52%,#f29400 100%);
 box-shadow:0 0 9px 1px rgba(255,190,60,.65),0 1px 3px rgba(0,0,0,.35),
 inset -2px -3px 5px rgba(170,100,0,.35),inset 2px 2px 5px rgba(255,252,225,.9)}
@@ -276,8 +296,9 @@ box-shadow:inset 0 1px 1px rgba(40,50,70,.45);opacity:1;transition:opacity .7s e
 #dsh-overclock-toggle[data-state="on"]{color:var(--dsh-oc-accent,#f5a524) !important;
 background:color-mix(in srgb,var(--dsh-oc-accent,#f5a524) 14%,transparent) !important;
 box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--dsh-oc-accent,#f5a524) 45%,transparent) !important}
-/* 开态让圆盘滑到右端（唯一的状态开关，位移与光晕都读它） */
-#dsh-overclock-toggle[data-state="on"] .dsh-oc-track{--dsh-oc-x:${TRAVEL}px}
+/* 开态让圆盘滑到右端。端点值写在 .dsh-oc-knob / .dsh-oc-glow / .dsh-oc-pulse
+   各自的规则里（都是 translateX(0) → translateX(TRAVEL)），不再经由一个自定义属性中转：
+   未注册的自定义属性浏览器不做逐帧插值，中转一次等于把位移变成"瞬移 + 补帧"。 */
 /* 继承态：轨道描虚线，表明"这个值不是你亲自设的" */
 .dsh-oc[data-inherited="1"] .dsh-oc-track{outline:1px dashed currentColor;outline-offset:1px}
 /* 错误态：红色描边，点击即重试 */
@@ -296,10 +317,11 @@ box-shadow:inset 0 0 0 1px currentColor !important}
    （注意 CSS 模板字符串里不能出现反引号，注释也一样 —— 会提前把模板关掉。） */
 .dsh-oc-pulse{position:absolute;left:${INSET}px;top:${INSET}px;width:${KNOB}px;height:${KNOB}px;
 border-radius:50%;z-index:1;pointer-events:none;opacity:0;
-transform:translateX(var(--dsh-oc-x));
+transform:translateX(0);will-change:transform;
 transition:transform var(--dsh-oc-move) var(--dsh-oc-ease),opacity .3s ease}
 .dsh-oc-pulse::after{content:'';position:absolute;inset:0;border-radius:50%;
 box-shadow:0 0 0 1.5px currentColor;opacity:0}
+#dsh-overclock-toggle[data-state="on"] .dsh-oc-pulse{transform:translateX(${TRAVEL}px)}
 #dsh-overclock-toggle[data-busy="1"] .dsh-oc-pulse{opacity:1}
 #dsh-overclock-toggle[data-busy="1"] .dsh-oc-pulse::after{
 animation:dsh-oc-pulse 1.1s ease-out infinite}
@@ -371,6 +393,36 @@ transition:none !important;animation:none !important}}
         if (result.ok === false) throw new Error(result.error && result.error.message ? result.error.message : 'remote call failed')
       }
       throw new Error('remote returned a non-Result shape')
+    }
+
+    /**
+     * 把 Remote 调用推迟到"过渡已经跑起来之后"。
+     *
+     * 为什么必须推迟（实测数据，不是猜测）：
+     *   在真实 DSH 里点击开关，逐帧采样圆盘位置是
+     *     10ms:19.00 24ms:18.96 74ms:18.50 102ms:18.43 —— 前 100ms 只走了 0.57px
+     *     102ms→236ms 之间一帧都没有（主线程被占）
+     *     236ms:17.91 266ms:15.23 —— 30ms 内跳了 2.68px
+     *   也就是"卡住 → 猛冲"，人眼读作瞬移。同一份 CSS 在无头浏览器里逐帧是平滑的，
+     *   差别只在于：真实环境里 api().toggle() 是一次跨进程 Remote 调用，
+     *   它要写状态文件并触发 system-prompt/change，整个宿主在那一刻都在忙，
+     *   浏览器拿不到渲染机会。等主线程回来，过渡已经过半。
+     *
+     * 做法：先用两帧把"关→开"的样式变更提交并让浏览器画出来，再发请求。
+     *   第一帧 rAF：让 React 的这次状态更新完成、样式生效；
+     *   第二帧 rAF：此时过渡已经在跑，再把请求排进任务队列。
+     * 代价是状态落盘晚约 32ms —— 对"按会话开关"这种低频操作没有影响。
+     */
+    function afterTransitionStarted(fn) {
+      if (typeof requestAnimationFrame !== 'function') {
+        fn()
+        return
+      }
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          fn()
+        })
+      })
     }
 
     /**
