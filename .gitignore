@@ -1,0 +1,28 @@
+# 依赖
+node_modules/
+.pnpm-store/
+
+# 安装期备份
+*.bak
+*.bak-*
+*.orig
+*.tmp
+
+# 日志与运行时产物
+*.log
+logs/
+.DS_Store
+Thumbs.db
+
+# 本地环境
+.env
+.env.*
+!.env.example
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+
+# 本插件在 $DSH_HOME 下的状态文件（按会话开关，属于本机运行时状态，不入库）
+overclock-mode.json

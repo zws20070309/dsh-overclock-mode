@@ -1,0 +1,11 @@
+# 统一换行：仓库内一律 LF，检出时由各平台自行决定。
+# 不做这层约束的话，Windows 上提交会把整个仓库留在 CRLF，
+# 而 README 里的代码块与 .mjs 脚本在 Linux/CI 上会因此出现行尾差异。
+* text=auto eol=lf
+
+# 明确二进制，避免被当成文本做换行转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.ico binary
